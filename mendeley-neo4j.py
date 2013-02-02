@@ -53,7 +53,7 @@ def get_node (uri):
     data, metadata = cypher.execute(graph_db, query)
     if data:
         return data
-    return False
+    return None
     
     
 def create_node (data):
@@ -83,14 +83,14 @@ class ConceptPower:
         root = ET.fromstring(response)
         if len(root) > 0:
             return root
-        return False
+        return None
         
     def get (self, uri):
         response = urllib2.urlopen(self.server+"Concept?id="+uri).read()
         root = ET.fromstring(response)
         if len(root) > 0:
             return root
-        return False
+        return None
     
  ##########################################################       
     
@@ -104,14 +104,14 @@ class ConceptMapper:
         if concept and pattern:
             self.map.append({'concept': concept, 'pattern': pattern})
             return True
-        return False
+        return None
         
     # Is the pattern already in the map? If so, return the URI.
     def check (self, pattern):
         found = ol_get(self.map, lambda x: x['pattern'] == pattern)
         if found:
             return found['concept']
-        return False
+        return None
     
     # So that we can use the map later
     def export (self, file):
@@ -120,7 +120,7 @@ class ConceptMapper:
             for entry in self.map:
                 f.write(entry['concept'] + "\t" + entry['pattern'] + "\n")
             return True
-        return False
+        return None
         
     # Load a previously exported()ed map
     def load (self, file):
@@ -162,29 +162,29 @@ papers = get_mendeley_documents()
 for paper in papers:
     
     node = get_node (paper['uri'])                              # Paper node exists?
+    print paper['title'] + "\n"
 
-    if not node:                                                # If it doesn't exist, create a new one!
-        print "Create node: "
-        print ({'uri': normalize_text(paper['uri']), 'title': normalize_text(paper['title']), 'year': normalize_text(paper['year']), 'type': 'Paper'})
-#      create_node ({'uri': normalize_text(paper['uri']), 'title': normalize_text(paper['title']), 'year': normalize_text(paper['year']), 'type': Paper})
-        
-   #     node = get_node (paper['uri'])
+    if node is None:                                                # If it doesn't exist, create a new one!
+        #print "Create node: "
+        #print ({'uri': normalize_text(paper['uri']), 'title': normalize_text(paper['title']), 'year': normalize_text(paper['year']), 'type': 'Paper'})
+        create_node ({'uri': normalize_text(paper['uri']), 'title': normalize_text(paper['title']), 'year': normalize_text(paper['year']), 'type': 'Paper'})
+        node = get_node (paper['uri'])
         
     authors = paper['authors']
-    print "Authors: "
-    print authors
-    
+
     for author in authors:
         # First, find the right concept in ConceptPower. Won't proceed without a ConceptPower URI.
         uri_in_map = map.check (author['surname'] + ", " + author['forename'])  # Check the mapper first
         if uri_in_map:                                                          # Already mapped it?
             concept_uri = uri_in_map                                            # Yes. That was easy!
         else:
-            print "\nConcept needed for Mendeley author: " + author['surname'] + ", " + author['forename'] + "\n"
+            print "*** Concept needed for Mendeley author: " + author['surname'] + ", " + author['forename'] + " ***\n"
             
             need_new_concept = False
             cp_candidates = cp.search ( author['surname'] )                     # Search ConceptPower by last name only
-            if cp_candidates:                                                   # Did it find anything? Yes.
+            if cp_candidates is None:
+                need_new_concept = True
+            else:                                      # Did it find anything? Yes.
                 i = 0
                 options = []
                 
@@ -195,15 +195,14 @@ for paper in papers:
                 options.append({'id': i, 'title': '--None of these--'})   
                 
 
-                user_selection = get_selection (options, "\nPotential matches found in ConceptPower. Please make a selection:\n")
+                user_selection = get_selection (options, "Potential matches found in ConceptPower. Please make a selection:\n")
                 selected = ol_get (options, lambda x: x['id'] == user_selection)
                 if selected == '--None of these--':
                     need_new_concept = True
                 else:
                     concept_uri = selected ['uri']                              # Using the ConceptPower URI selected from the list
+                    author_title = selected ['title']
                     map.add ( selected['uri'], author['surname'] + ", " + author['forename'] )
-            else:
-                need_new_concept = True
                 
             if need_new_concept:
                 print "Ok, you need a new concept."
@@ -213,32 +212,40 @@ for paper in papers:
                     user_uri = raw_input("Please add a new concept to ConceptPower, and enter the URI here: ")
                     if user_uri:
                         user_concept = cp.get(user_uri)             # Look up the URI that the user entered
-                        if not user_concept:
+                        if user_concept is None:
                             print "You lazy lump."                      # Couldn't find the URI. The user lies.
                         else:
                             print "Ok, we'll use this one."
                             concept_uri = user_uri                              # Using the ConceptPower URI that the user just created
+                            author_title = user_concept[0][1].text
                             map.add ( user_uri, author['surname'] + ", " + author['forename'] )
                             created = True
-                                        
-    print map.map
-    
-        # Now that we have a ConceptPower URI, find the corresponding node (if there is one) in the Neo4j graph. If there isn't one, we'll create a new node.
-                    
-    au_node = get_node (concept_uri)
-    print au_node
+                            
+        # Second, we need to find the corresponding node (if there is one) in the Neo4j graph. If there isn't one, we'll create a new node.
+        au_node = get_node (concept_uri)
+
+        if au_node is None:                                         # If there is no node in Neo4j for the author, then we create a new one.
+            print "Create: "
+            print ({'uri': concept_uri, 'title': author_title, 'type': 'Person'})
+            create_node ({'uri': concept_uri, 'title': author_title, 'type': 'Person'})
+            au_node = get_node (concept_uri)
         
-#        if not au_node:
-            
-  #          create_node (concept_uri, full name, Person)
-            
- #           au_node = get_node (concept_uri)
-            
-  #      relation = get_relation (where node hasAuthor au_node)
+  
+        # Third, we need to check whether there is a relationship between the author and the paper in the Neo4j graph. If there isn't, we'll create a relationship.
+        graph_db = neo4j.GraphDatabaseService("http://localhost:7474/db/data")
+        query = 'START n=node:node_auto_index(uri="'+concept_uri+'") MATCH (x)-[:hasAuthor]->(n) RETURN x'
+        data, metadata = cypher.execute(graph_db, query)
         
-  #      if not relation:
-            
-   #         create_relation (node, 'hasAuthor', au_node)
-            
-  #      success
+        print node[0][0]
         
+        rel_exist = False
+        if len (data) > 0:
+            for result in data:
+                if result[0]['uri'] == paper['uri']:
+                    rel_exist = True
+        if not rel_exist:
+            print 'Creating new relation.'
+            rel = node[0][0].create_relationship_to(au_node[0][0], "hasAuthor")
+                #graph_db.get_or_create_relationships((node[0][0], "hasAuthor", au_node[0][0]))
+        else:
+            print 'Relationship already exists. Skipping.'
