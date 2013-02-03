@@ -7,6 +7,8 @@ import urllib2
 import xml.etree.ElementTree as ET
 from py2neo import neo4j, cypher
 import unicodedata
+import re
+
 
 ##########################################################
 # All-purpose scripts for searching lists of objects
@@ -155,19 +157,20 @@ def get_selection (options, prompt):
 
 cp = ConceptPower()
 map = ConceptMapper()
+#map.load("./map.txt")
 
 
 papers = get_mendeley_documents()
 
 for paper in papers:
-    
     node = get_node (paper['uri'])                              # Paper node exists?
     print paper['title'] + "\n"
 
+    print ({'uri': normalize_text(paper['uri']), 'title': normalize_text(paper['title']), 'year': normalize_text(paper['year']), 'type': 'Paper'})
     if node is None:                                                # If it doesn't exist, create a new one!
         #print "Create node: "
         #print ({'uri': normalize_text(paper['uri']), 'title': normalize_text(paper['title']), 'year': normalize_text(paper['year']), 'type': 'Paper'})
-        create_node ({'uri': normalize_text(paper['uri']), 'title': normalize_text(paper['title']), 'year': normalize_text(paper['year']), 'type': 'Paper'})
+        create_node ({'uri': normalize_text(paper['uri']), 'title': normalize_text(paper['title']).replace("'",""), 'year': normalize_text(paper['year']), 'type': 'Paper'})
         node = get_node (paper['uri'])
         
     authors = paper['authors']
@@ -197,7 +200,7 @@ for paper in papers:
 
                 user_selection = get_selection (options, "Potential matches found in ConceptPower. Please make a selection:\n")
                 selected = ol_get (options, lambda x: x['id'] == user_selection)
-                if selected == '--None of these--':
+                if selected['title'] == '--None of these--':
                     need_new_concept = True
                 else:
                     concept_uri = selected ['uri']                              # Using the ConceptPower URI selected from the list
@@ -249,3 +252,5 @@ for paper in papers:
                 #graph_db.get_or_create_relationships((node[0][0], "hasAuthor", au_node[0][0]))
         else:
             print 'Relationship already exists. Skipping.'
+        
+map.export("./map.txt")  
